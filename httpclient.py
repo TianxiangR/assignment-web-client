@@ -32,28 +32,48 @@ class HTTPResponse(object):
         self.code = code
         self.body = body
 
+class ParsedHttpResponse:
+    def __init__(self, status_code: int, headers: dict, body: str | None):
+        self.status_code = status_code
+        self.headers = headers
+        self.body = body
+
 class HTTPClient(object):
-    #def get_host_port(self,url):
 
-    def connect(self, host, port):
-        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.socket.connect((host, port))
-        return None
 
-    def get_code(self, data):
-        return None
+    # 3xx codes that has redirections
+    # https://stackoverflow.com/questions/16194988/for-which-3xx-http-codes-is-the-location-header-mandatory
+    redirection_codes = set([301, 302, 303, 307, 308])
+    def get_host_port(self,url):
+        parse_result = urllib.parse.urlparse(url)
+        return [parse_result.hostname, parse_result.port]
 
-    def get_headers(self,data):
-        return None
+    def connect(self, host, port) -> socket.socket:
+        s = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+        s.connect((host, port))
+        return s
 
-    def get_body(self, data):
-        return None
-    
-    def sendall(self, data):
-        self.socket.sendall(data.encode('utf-8'))
-        
-    def close(self):
-        self.socket.close()
+    def parse_http_response(self, data) -> ParsedHttpResponse:
+        tokens = data.split("\r\n")
+        status_code = int(tokens[0][9: 12])
+        headers = {}
+        body = ""
+        for i in range(1, len(tokens)):
+            if ":" in tokens[i]:
+                colon_indx = tokens[i].find(":")
+                header = tokens[i][:colon_indx]
+                value = tokens[i][colon_indx + 1:].lstrip()
+                if header in headers and isinstance(headers[header], list):
+                    headers[header] = [headers[header], value]
+                else:
+                    headers[header] = value
+            else:
+                break
+        body_start_index = data.find("\r\n\r\n")
+        if body_start_index != -1:
+            body = data[body_start_index + 4:]
+        rval = ParsedHttpResponse(status_code, headers, body)
+        return rval        
 
     # read everything from the socket
     def recvall(self, sock):
@@ -68,9 +88,39 @@ class HTTPClient(object):
         return buffer.decode('utf-8')
 
     def GET(self, url, args=None):
-        code = 500
-        body = ""
+        parse_result = urllib.parse.urlparse(url)
+        host = parse_result.hostname
+        port = parse_result.port
+        if port is None:
+            port = 80
+        path = parse_result.path
+        sock = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+        sock.connect((host, port))
+        request = b"GET / HTTP/1.1\r\nHost:www.google.com\r\n\r\n"
+        sock.sendall(b"GET / HTTP/1.1\r\nHost:www.google.com\r\n\r\n")
+        sock.shutdown(socket.SHUT_WR)
+        buffer = b''
+        while True:
+            part = sock.recv(4096)
+            if part:
+                buffer += part
+            else:
+                break
+        response = buffer.decode('utf-8')
+        print("GET:", response)
+        parsed_response = self.parse_http_response(response)
+        headers = parsed_response.headers
+        code = parsed_response.status_code
+        body = parsed_response.body
+        
+        if parsed_response in self.redirection_codes and 'Location' in headers:
+            redirected_location = headers['Location']
+            if isinstance(redirected_location, list):
+                redirected_location = redirected_location[0]
+            return self.GET(redirected_location)
+
         return HTTPResponse(code, body)
+
 
     def POST(self, url, args=None):
         code = 500
@@ -85,6 +135,7 @@ class HTTPClient(object):
     
 if __name__ == "__main__":
     client = HTTPClient()
+    client.GET('http://www.google.com/')
     command = "GET"
     if (len(sys.argv) <= 1):
         help()

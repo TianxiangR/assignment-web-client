@@ -62,7 +62,7 @@ class MyHTTPHandler(http.server.BaseHTTPRequestHandler):
 def make_http_server(host = BASEHOST, port = BASEPORT):
     return http.server.HTTPServer( (host, port) , MyHTTPHandler)
 
-# always returns 404
+# always returns 404 
 def nothing_available(self):
     self.send_error(404, "File not found")
     self.end_headers()

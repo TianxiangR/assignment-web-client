@@ -23,7 +23,7 @@ import socket
 import re
 # you may use urllib to encode data appropriately
 import urllib.parse
-import json
+import time
 
 def help():
     print("httpclient.py [GET/POST] [URL]\n")
@@ -33,47 +33,58 @@ class HTTPResponse(object):
         self.code = code
         self.body = body
 
-class ParsedHttpResponse:
-    def __init__(self, status_code: int, headers: dict, body: str | None):
-        self.status_code = status_code
-        self.headers = headers
-        self.body = body
-
-class HTTPClient(object):
-    def get_host_port(self,url):
-        parse_result = urllib.parse.urlparse(url)
-        return [parse_result.hostname, parse_result.port]
-
-    def parse_http_response(self, data) -> ParsedHttpResponse:
-        tokens = data.split("\r\n")
-        if len(tokens[0]) > 12: 
-            status_code = int(tokens[0][9: 12])
+class Response:
+    def __init__(self, raw: bytearray | bytes):
+        self.raw = raw
+        #parse response
+        tokens = raw.split(b'\r\n')
+        if len(tokens[0]) > 12:
+            self.status = int(tokens[0][9: 12])
         else:
-            status_code = 0
-        headers = {}
-        body = ""
-        for i in range(1, len(tokens)):
-            if ":" in tokens[i]:
-                colon_indx = tokens[i].find(":")
-                header = tokens[i][:colon_indx]
-                value = tokens[i][colon_indx + 1:].lstrip()
-                if header in headers and isinstance(headers[header], list):
-                    headers[header] = [headers[header], value]
-                else:
-                    headers[header] = value
+            self.status = 0
+        self.headers = {}
+        self.body = ""
+        encoding = "utf-8" # default encoding
+        tokens.pop(0)
+        for token in tokens:
+            if b':' in token:
+                colon_indx = token.find(b":")
+                header = token[:colon_indx].decode('utf-8').strip()
+                value = token[colon_indx + 1:].decode('utf-8').strip()
+                self.headers[header] = value
+                if header == "Content-Type" and "charset" in value:
+                    # extract encoding of the body
+                    charset_indx = value.find("charset")
+                    encoding = value[charset_indx + 8:]
             else:
                 break
-        body_start_index = data.find("\r\n\r\n")
+            
+        body_start_index = raw.find(b"\r\n\r\n")
         if body_start_index != -1:
-            body = data[body_start_index + 4:]
-        rval = ParsedHttpResponse(status_code, headers, body)
-        return rval
+            # decode the body with the specified encoding
+            self.body = raw[body_start_index + 4:].decode(encoding)
 
-    def fetch(self, host, port, request) -> str:
+
+class HTTPClient(object):
+    def fetch(self, url: str, init: dict=None) -> Response:
+        # get host and port
+        parse_result = urllib.parse.urlparse(url)
+        host = parse_result.hostname
+        port = parse_result.port
+        request = self.build_http_request(url, init)
+        if port is None:
+            port = 80
+    
+        # create socket
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+
+        # make connection
         sock.connect((host, port))
+
+        # send request
         sock.sendall(request.encode('utf-8'))
-        sock.shutdown(socket.SHUT_WR)
+
+        # receive response
         buffer = bytearray()
         done = False
         while not done:
@@ -83,67 +94,84 @@ class HTTPClient(object):
             else:
                 done = not part
         sock.close()
-        return buffer.decode('utf-8')
+        return Response(buffer)
     
-    def build_http_request(self, url, method, args):
+
+    def build_http_request(self, url: str, options: dict=None) -> str:
+        method = "GET"
         parse_result = urllib.parse.urlparse(url)
         host = parse_result.hostname
         path = parse_result.path
         if path == "":
             path = "/"
         query = parse_result.query
-        headers = {}
-        payload = ""
-
         if query != "":
             path += "?" + query
-        if method == "POST":
-            if args is not None:
-                headers["Content-Type"] = "application/x-www-form-urlencoded"
-                payload = urllib.parse.urlencode(args)
-                headers["Content-Length"] = len(payload)
-            else:
-                headers["Content-Length"] = 0
+        headers = { # default headers
+            "Connection": "close", # telling the server that we don't expect to keep the connection alive
+            "Content-Length": 0, # default body length
+            "Content-Type": "text/plain; charset=utf-8" # default content type
+        }
+        body = ""
+
+        # handle options
+        if options is not None:
+            method = options.get('method', 'GET')
+            option_headers = options.get('headers', {})
+            # overriding the default headers
+            for key, value in option_headers.items():
+                headers[key] = value
+            body = options.get('body', '')
+        
         request = method + " " + path + " HTTP/1.1\r\nHost: " + host + "\r\n"
 
         for key, value in headers.items():
             request += key + ": " + str(value) + "\r\n"
         
-        request += "\r\n" + payload
+        request += "\r\n" + body
 
         return request
 
 
     def GET(self, url, args=None):
-        parse_result = urllib.parse.urlparse(url)
-        host = parse_result.hostname
-        port = parse_result.port
-        if port is None:
-            port = 80
-        
-        request = self.build_http_request(url, "GET", args)
-        response = self.fetch(host, port, request)
-        parsed_response = self.parse_http_response(response)
-        code = parsed_response.status_code
-        body = parsed_response.body
-        print(response)
+        options = {}
+        if args is not None:
+            body = urllib.parse.urlencode(args)
+            options['body'] = body
+            options['headers'] = {
+                "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
+                "Content-Length": len(body)
+            }
+            
+
+        response = self.fetch(url, options)
+        code = response.status
+        body = response.body
+        # print(response.body)
+        # print(response.header)
 
         return HTTPResponse(code, body)
 
 
     def POST(self, url, args=None):
-        parse_result = urllib.parse.urlparse(url)
-        host = parse_result.hostname
-        port = parse_result.port
-        if port is None:
-            port = 80
-        
-        request = self.build_http_request(url, "POST", args)
-        response = self.fetch(host, port, request)
-        print(response)
-        parsed_response = self.parse_http_response(response)
-        code = parsed_response.status_code
-        body = parsed_response.body
+        options = {
+            "method": "POST"
+        }
+        if args is not None:
+            body = urllib.parse.urlencode(args)
+            options['body'] = body
+            options['headers'] = {
+                "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
+                "Content-Length": len(body)
+            }
+            
+
+        response = self.fetch(url, options)
+        code = response.status
+        body = response.body
+        # print(response.body)
+        # print(response.header)
+
         return HTTPResponse(code, body)
 
     def command(self, url, command="GET", args=None):
@@ -154,8 +182,8 @@ class HTTPClient(object):
     
 if __name__ == "__main__":
     client = HTTPClient()
-    client.GET("http://slashdot.org/")
-    # client.GET("http://www.google.com/")
+    # client.GET("http://slashdot.org/")
+    client.POST("http://www.google.com/")
     # client.GET("http://c2.com/cgi/wiki?CommonLispHyperSpec")
     # client.GET("http://[2605:fd00:4:1001:f816:3eff:fec0:41df]/parts/")
     # args = {

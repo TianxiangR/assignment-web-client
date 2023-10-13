@@ -24,6 +24,7 @@ import re
 # you may use urllib to encode data appropriately
 import urllib.parse
 import time
+from typing import Union
 
 def help():
     print("httpclient.py [GET/POST] [URL]\n")
@@ -34,7 +35,7 @@ class HTTPResponse(object):
         self.body = body
 
 class Response:
-    def __init__(self, raw: bytearray | bytes):
+    def __init__(self, raw: Union[bytearray, bytes]):
         self.raw = raw
         #parse response
         tokens = raw.split(b'\r\n')
